@@ -35,7 +35,15 @@ def send_document(chat_id, file_bytes, filename, caption=""):
     except Exception as e:
         logger.error(f"Document send error: {e}")
 
-# ================== KEYBOARD (updated with new button) ==================
+def send_text_document(chat_id, text, filename="data.txt"):
+    url = f"https://api.telegram.org/bot{EDITOR_BOT_TOKEN}/sendDocument"
+    try:
+        files = {'document': (filename, text.encode('utf-8'), 'text/plain')}
+        requests.post(url, data={"chat_id": chat_id}, files=files, timeout=30)
+    except Exception as e:
+        logger.error(f"Text document send error: {e}")
+
+# ================== KEYBOARD ==================
 main_menu_kb = {
     "keyboard": [
         ["⚙️ কনফিগ", "💰 ব্যালেন্স"],
@@ -56,7 +64,7 @@ def show_main_menu(chat_id):
     send_message(chat_id, "🔧 ব্যাকআপ এডিটর - প্রধান মেনু\n\nব্যাকআপ ফাইল পাঠান অথবা নিচের বাটন ব্যবহার করুন।",
                  reply_markup=main_menu_kb)
 
-# ================== SECTION HELPERS (unchanged) ==================
+# ================== SECTION HELPERS ==================
 def list_items(chat_id, title, items, limit=30, formatter=None):
     if not items:
         send_message(chat_id, f"{title} খালি।")
@@ -166,25 +174,19 @@ def handle_user_versions(chat_id, data):
     uv = data.get("user_versions", {})
     list_items(chat_id, "📋 ইউজার ভার্সন", uv, formatter=lambda k, v: f"{k}: {v}")
 
-# ================== TEXT to .gz ==================
+# ================== TEXT to .gz (accepts text or file) ==================
 def handle_text_to_backup(chat_id, msg):
-    if "reply_to_message" in msg and "text" in msg["reply_to_message"]:
-        json_text = msg["reply_to_message"]["text"]
-        try:
-            new_data = json.loads(json_text)
-            json_bytes = json.dumps(new_data, indent=2, ensure_ascii=False).encode('utf-8')
-            compressed = gzip.compress(json_bytes, compresslevel=6)
-            fname = f"converted_backup_{datetime.datetime.now():%Y%m%d_%H%M%S}.json.gz"
-            send_document(chat_id, compressed, fname, "✅ টেক্সট থেকে ব্যাকআপ তৈরি হয়েছে।")
-        except Exception as e:
-            send_message(chat_id, f"❌ JSON পার্স করতে সমস্যা: {e}")
-    else:
-        send_message(chat_id, "❗ প্রথমে একটি JSON টেক্সট মেসেজে রিপ্লাই দিয়ে /tobackup অথবা 📝 টেক্সট → .gz বাটন চাপুন।")
+    if "reply_to_message" not in msg:
+        send_message(chat_id, "❗ একটি টেক্সট বা .txt/.json ফাইলে রিপ্লাই দিয়ে /tobackup বা বাটন চাপুন।")
+        return
 
-# ================== .gz to TEXT (NEW) ==================
-def handle_gz_to_text(chat_id, msg):
-    if "reply_to_message" in msg and "document" in msg["reply_to_message"]:
-        file_id = msg["reply_to_message"]["document"]["file_id"]
+    replied = msg["reply_to_message"]
+    json_text = None
+
+    if "text" in replied:
+        json_text = replied["text"]
+    elif "document" in replied:
+        file_id = replied["document"]["file_id"]
         try:
             file_info = requests.get(f"https://api.telegram.org/bot{EDITOR_BOT_TOKEN}/getFile?file_id={file_id}").json()
             if not file_info.get("ok"):
@@ -192,21 +194,49 @@ def handle_gz_to_text(chat_id, msg):
                 return
             file_path = file_info["result"]["file_path"]
             content = requests.get(f"https://api.telegram.org/file/bot{EDITOR_BOT_TOKEN}/{file_path}").content
-            decompressed = gzip.decompress(content)
-            text = decompressed.decode('utf-8')
-            # বড় ফাইলের জন্য ভাগ করে পাঠানো
-            max_len = 4000
-            for i in range(0, len(text), max_len):
-                send_message(chat_id, text[i:i+max_len])
-            send_message(chat_id, "✅ .gz → টেক্সট কনভার্ট সম্পন্ন।")
+            json_text = content.decode('utf-8')
         except Exception as e:
-            send_message(chat_id, f"❌ কনভার্ট করতে সমস্যা: {e}")
+            send_message(chat_id, f"❌ ফাইল পড়তে সমস্যা: {e}")
+            return
     else:
+        send_message(chat_id, "❗ রিপ্লাই করা মেসেজে টেক্সট বা ফাইল নেই।")
+        return
+
+    try:
+        new_data = json.loads(json_text)
+        json_bytes = json.dumps(new_data, indent=2, ensure_ascii=False).encode('utf-8')
+        compressed = gzip.compress(json_bytes, compresslevel=6)
+        fname = f"converted_backup_{datetime.datetime.now():%Y%m%d_%H%M%S}.json.gz"
+        send_document(chat_id, compressed, fname, "✅ টেক্সট/ফাইল থেকে ব্যাকআপ তৈরি হয়েছে।")
+    except Exception as e:
+        send_message(chat_id, f"❌ JSON পার্স করতে সমস্যা: {e}")
+
+# ================== .gz to TEXT (sends as .txt file) ==================
+def handle_gz_to_text(chat_id, msg):
+    if "reply_to_message" not in msg or "document" not in msg["reply_to_message"]:
         send_message(chat_id, "❗ একটি .json.gz ফাইলে রিপ্লাই দিয়ে 📄 .gz → টেক্সট বাটন চাপুন বা /gztotext কমান্ড দিন।")
+        return
+
+    file_id = msg["reply_to_message"]["document"]["file_id"]
+    try:
+        file_info = requests.get(f"https://api.telegram.org/bot{EDITOR_BOT_TOKEN}/getFile?file_id={file_id}").json()
+        if not file_info.get("ok"):
+            send_message(chat_id, "❌ ফাইল ডাউনলোড ব্যর্থ।")
+            return
+        file_path = file_info["result"]["file_path"]
+        content = requests.get(f"https://api.telegram.org/file/bot{EDITOR_BOT_TOKEN}/{file_path}").content
+        decompressed = gzip.decompress(content)
+        text = decompressed.decode('utf-8')
+        # পাঠাই .txt ফাইল হিসেবে
+        send_text_document(chat_id, text, filename=f"extracted_{datetime.datetime.now():%Y%m%d_%H%M%S}.txt")
+        send_message(chat_id, "✅ .gz → টেক্সট ফাইল রেডি।")
+    except Exception as e:
+        send_message(chat_id, f"❌ কনভার্ট করতে সমস্যা: {e}")
 
 # ================== COMMAND PROCESSOR ==================
 def process_message(chat_id, msg):
-    if "document" in msg and "reply_to_message" not in msg:  # শুধু সরাসরি ফাইল (রিপ্লাই নয়)
+    # সরাসরি ফাইল (রিপ্লাই নয়) -> ব্যাকআপ লোড
+    if "document" in msg and "reply_to_message" not in msg:
         file_id = msg["document"]["file_id"]
         file_info = requests.get(f"https://api.telegram.org/bot{EDITOR_BOT_TOKEN}/getFile?file_id={file_id}").json()
         if not file_info.get("ok"):
@@ -228,7 +258,8 @@ def process_message(chat_id, msg):
         return
 
     text = msg["text"].strip()
-    # নতুন ইউজার যারা শুধু কনভার্টার ব্যবহার করতে চায়
+
+    # কনভার্টার কমান্ড (যে কেউ ব্যবহার করতে পারে, ব্যাকআপ সেশন ছাড়াই)
     if text in ["📝 টেক্সট → .gz", "/tobackup"]:
         handle_text_to_backup(chat_id, msg)
         return
