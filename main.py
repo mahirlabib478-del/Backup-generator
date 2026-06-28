@@ -1,17 +1,22 @@
 import os, time, gzip, json, datetime, logging, requests
-from copy import deepcopy
+from flask import Flask
 
 # ================== CONFIG ==================
 EDITOR_BOT_TOKEN = "8993922841:AAFKjjZqiWHe8AEY1t4f86d1h7BcZXT5rIM"  # <-- এখানে বট টোকেন দিন
 ADMIN_CHAT_ID = "2035024902"                # <-- আপনার ইউজার আইডি
+PORT = int(os.environ.get("PORT", 10000))
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ================== SESSION ==================
-sessions = {}  # {chat_id: {"data": {...}}}
+app = Flask(__name__)
 
-# ================== TELEGRAM HELPERS ==================
+@app.route("/")
+def home():
+    return "Backup Editor Bot Running!"
+
+sessions = {}
+
 def send_message(chat_id, text, reply_markup=None, parse_mode=None):
     url = f"https://api.telegram.org/bot{EDITOR_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
@@ -30,7 +35,7 @@ def send_document(chat_id, file_bytes, filename, caption=""):
     except Exception as e:
         logger.error(f"Document send error: {e}")
 
-# ================== KEYBOARD ==================
+# ================== KEYBOARD (updated with new button) ==================
 main_menu_kb = {
     "keyboard": [
         ["⚙️ কনফিগ", "💰 ব্যালেন্স"],
@@ -40,7 +45,8 @@ main_menu_kb = {
         ["📥 ডিপোজিট", "🏆 লিডারবোর্ড"],
         ["🔗 রেফারেল", "📜 ট্রানজেকশন"],
         ["🔄 সাবমিটেড ইউজারনেম", "📊 RPS উইনস"],
-        ["📋 ইউজার ভার্সন", "📝 টেক্সট → .gz"],
+        ["📋 ইউজার ভার্সন"],
+        ["📝 টেক্সট → .gz", "📄 .gz → টেক্সট"],
         ["✅ /done"]
     ],
     "resize_keyboard": True
@@ -50,7 +56,7 @@ def show_main_menu(chat_id):
     send_message(chat_id, "🔧 ব্যাকআপ এডিটর - প্রধান মেনু\n\nব্যাকআপ ফাইল পাঠান অথবা নিচের বাটন ব্যবহার করুন।",
                  reply_markup=main_menu_kb)
 
-# ================== SECTION DISPLAY HELPERS ==================
+# ================== SECTION HELPERS (unchanged) ==================
 def list_items(chat_id, title, items, limit=30, formatter=None):
     if not items:
         send_message(chat_id, f"{title} খালি।")
@@ -66,7 +72,6 @@ def list_items(chat_id, title, items, limit=30, formatter=None):
         lines.append(str(items))
     send_message(chat_id, "\n".join(lines))
 
-# ================== SECTION HANDLERS ==================
 def handle_config(chat_id, data):
     config = data.get("config", {})
     list_items(chat_id, "⚙️ কনফিগ", config, formatter=lambda k, v: f"`{k}` = `{v}`")
@@ -161,7 +166,7 @@ def handle_user_versions(chat_id, data):
     uv = data.get("user_versions", {})
     list_items(chat_id, "📋 ইউজার ভার্সন", uv, formatter=lambda k, v: f"{k}: {v}")
 
-# ================== TEXT TO .json.gz CONVERTER ==================
+# ================== TEXT to .gz ==================
 def handle_text_to_backup(chat_id, msg):
     if "reply_to_message" in msg and "text" in msg["reply_to_message"]:
         json_text = msg["reply_to_message"]["text"]
@@ -176,10 +181,32 @@ def handle_text_to_backup(chat_id, msg):
     else:
         send_message(chat_id, "❗ প্রথমে একটি JSON টেক্সট মেসেজে রিপ্লাই দিয়ে /tobackup অথবা 📝 টেক্সট → .gz বাটন চাপুন।")
 
+# ================== .gz to TEXT (NEW) ==================
+def handle_gz_to_text(chat_id, msg):
+    if "reply_to_message" in msg and "document" in msg["reply_to_message"]:
+        file_id = msg["reply_to_message"]["document"]["file_id"]
+        try:
+            file_info = requests.get(f"https://api.telegram.org/bot{EDITOR_BOT_TOKEN}/getFile?file_id={file_id}").json()
+            if not file_info.get("ok"):
+                send_message(chat_id, "❌ ফাইল ডাউনলোড ব্যর্থ।")
+                return
+            file_path = file_info["result"]["file_path"]
+            content = requests.get(f"https://api.telegram.org/file/bot{EDITOR_BOT_TOKEN}/{file_path}").content
+            decompressed = gzip.decompress(content)
+            text = decompressed.decode('utf-8')
+            # বড় ফাইলের জন্য ভাগ করে পাঠানো
+            max_len = 4000
+            for i in range(0, len(text), max_len):
+                send_message(chat_id, text[i:i+max_len])
+            send_message(chat_id, "✅ .gz → টেক্সট কনভার্ট সম্পন্ন।")
+        except Exception as e:
+            send_message(chat_id, f"❌ কনভার্ট করতে সমস্যা: {e}")
+    else:
+        send_message(chat_id, "❗ একটি .json.gz ফাইলে রিপ্লাই দিয়ে 📄 .gz → টেক্সট বাটন চাপুন বা /gztotext কমান্ড দিন।")
+
 # ================== COMMAND PROCESSOR ==================
 def process_message(chat_id, msg):
-    # File upload
-    if "document" in msg:
+    if "document" in msg and "reply_to_message" not in msg:  # শুধু সরাসরি ফাইল (রিপ্লাই নয়)
         file_id = msg["document"]["file_id"]
         file_info = requests.get(f"https://api.telegram.org/bot{EDITOR_BOT_TOKEN}/getFile?file_id={file_id}").json()
         if not file_info.get("ok"):
@@ -201,14 +228,21 @@ def process_message(chat_id, msg):
         return
 
     text = msg["text"].strip()
-    if chat_id not in sessions and text != "/start" and text != "📝 টেক্সট → .gz":
+    # নতুন ইউজার যারা শুধু কনভার্টার ব্যবহার করতে চায়
+    if text in ["📝 টেক্সট → .gz", "/tobackup"]:
+        handle_text_to_backup(chat_id, msg)
+        return
+    if text in ["📄 .gz → টেক্সট", "/gztotext"]:
+        handle_gz_to_text(chat_id, msg)
+        return
+
+    if chat_id not in sessions:
         send_message(chat_id, "📥 প্রথমে একটি ব্যাকআপ ফাইল (.json.gz) পাঠান।")
         return
 
-    session = sessions.get(chat_id, {"data": {}})
+    session = sessions[chat_id]
     data = session.get("data", {})
 
-    # Main menu buttons
     section_map = {
         "⚙️ কনফিগ": handle_config,
         "💰 ব্যালেন্স": handle_balances,
@@ -225,18 +259,11 @@ def process_message(chat_id, msg):
         "🔄 সাবমিটেড ইউজারনেম": handle_submitted_usernames,
         "📊 RPS উইনস": handle_rps_wins,
         "📋 ইউজার ভার্সন": handle_user_versions,
-        "📝 টেক্সট → .gz": lambda c, d: handle_text_to_backup(c, msg),
     }
     if text in section_map:
         section_map[text](chat_id, data)
         return
 
-    # Text to backup via command or button
-    if text == "/tobackup":
-        handle_text_to_backup(chat_id, msg)
-        return
-
-    # Done
     if text in ["✅ /done", "/done"]:
         try:
             json_bytes = json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8')
@@ -249,8 +276,7 @@ def process_message(chat_id, msg):
             send_message(chat_id, f"❌ জেনারেট করতে সমস্যা: {e}")
         return
 
-    # Editing commands
-    # (all /set... and /add... commands remain exactly as in the previous advanced code)
+    # Editing commands (unchanged)
     if text.startswith("/setconfig"):
         parts = text.split()
         if len(parts) < 3: send_message(chat_id, "❌ /setconfig <key> <value>"); return
@@ -373,10 +399,8 @@ def process_message(chat_id, msg):
     elif text.startswith("/clearsubmittednames"):
         data["submitted_usernames"] = []
         send_message(chat_id, "✅ জমা ইউজারনেম সাফ করা হয়েছে।")
-    # else unknown command (ignored)
 
-# ================== POLLING ==================
-def main():
+def telegram_polling():
     offset = None
     while True:
         try:
@@ -400,4 +424,6 @@ def main():
         time.sleep(1)
 
 if __name__ == "__main__":
-    main()
+    import threading
+    threading.Thread(target=telegram_polling, daemon=True).start()
+    app.run(host="0.0.0.0", port=PORT)
