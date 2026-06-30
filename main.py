@@ -2,7 +2,7 @@ import os, time, gzip, json, datetime, logging, requests
 from flask import Flask
 
 # ================== CONFIG ==================
-EDITOR_BOT_TOKEN = "8993922841:AAFKjjZqiWHe8AEY1t4f86d1h7BcZXT5rIM"  # <-- এখানে বট টোকেন দিন
+EDITOR_BOT_TOKEN = "8993922841:AAHRn5nvFUynMxvndMZowSyijU5Sl6hJgDw"  # <-- এখানে বট টোকেন দিন
 ADMIN_CHAT_ID = "2035024902"                # <-- আপনার ইউজার আইডি
 PORT = int(os.environ.get("PORT", 10000))
 
